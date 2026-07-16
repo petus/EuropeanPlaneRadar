@@ -228,8 +228,7 @@ This project did not appear out of thin air. It builds on two existing ones:
 
 ## Licence
 
-The code is under the **[MIT](LICENSE)** licence — you are free to use, modify and
-commercially deploy it.
+The code is under the **[MIT](LICENSE)** licence — you are free to use, modify.
 
 ### A request beyond the licence
 
