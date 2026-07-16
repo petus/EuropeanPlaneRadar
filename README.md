@@ -99,7 +99,16 @@ QRCode (ricmoo, MIT) is bundled directly with the project; there is nothing to i
 
 ### 3. Flashing
 
-Open `PlaneRadar.ino` — the other files load as tabs. Upload to the board.
+Open `PlaneRadar.ino` — the other files load as tabs. Upload to the board in Arduino IDE.
+
+
+Download the Binary file from relase (https://github.com/petus/EuropeanPlaneRadar/tags)
+
+Go to https://esp32flasher.chiptron.cz/
+
+Upload the binary file
+
+Flash it
 
 ### 4. First run
 
