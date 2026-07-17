@@ -68,7 +68,11 @@ static void copyCallsign(Aircraft* a, JsonObjectConst plane) {
 }
 
 bool ADSB_Fetch(double lat, double lon, float radiusKm) {
-  if (WiFi.status() != WL_CONNECTED) { s_count = 0; return false; }
+  // On any failure below we return false but leave s_list / s_count untouched,
+  // so the caller can keep the last good data on screen instead of blanking the
+  // radar on a single dropped request. The list is only rebuilt once a fetch
+  // actually succeeds (at the bottom of this function).
+  if (WiFi.status() != WL_CONNECTED) return false;
 
   float distNm = radiusKm / KM_PER_NM;
   char url[128];
@@ -80,16 +84,16 @@ bool ADSB_Fetch(double lat, double lon, float radiusKm) {
   client.setInsecure();
   HTTPClient http;
   http.setTimeout(10000);
-  if (!http.begin(client, url)) { s_count = 0; return false; }
+  if (!http.begin(client, url)) return false;
   http.useHTTP10(true);   // required by the streaming parser
   int code = http.GET();
   Serial.printf("ADSB: HTTP %d\n", code);
-  if (code != HTTP_CODE_OK) { http.end(); s_count = 0; return false; }
+  if (code != HTTP_CODE_OK) { http.end(); return false; }
 
   JsonDocument doc;
   DeserializationError err = deserializeJson(doc, http.getStream());
   http.end();
-  if (err) { Serial.printf("ADSB: JSON %s\n", err.c_str()); s_count = 0; return false; }
+  if (err) { Serial.printf("ADSB: JSON %s\n", err.c_str()); return false; }
 
   JsonArrayConst ac = doc["ac"].as<JsonArrayConst>();
   int n = 0;

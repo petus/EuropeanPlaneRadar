@@ -35,6 +35,17 @@ static unsigned long s_nextFetch = 0;
 static bool  s_dataOk = false;
 static String s_status = "Starting...";
 
+// --- Fetch scheduling / error tolerance ---
+// The free adsb.fi API occasionally drops a request (rate limit, slow response,
+// TLS handshake failing under heap pressure). A single miss should not blank the
+// radar or flash "Error", so failures are tolerated: the last good data stays on
+// screen and "Error" is only shown after several misses in a row.
+#define FETCH_OK_MS     8000    // interval after a good fetch (was 5000)
+#define FETCH_RETRY_MS  2000    // quick retry after a miss, before giving up
+#define FETCH_FAIL_MS  15000    // back-off once we are officially in error
+#define FETCH_FAIL_MAX     3    // consecutive misses before showing "Error"
+static int s_failCount = 0;     // consecutive failed fetches
+
 // Aircraft detail - the selected aircraft is remembered by its ICAO hex address,
 // NOT by its index in the list.
 //
@@ -142,6 +153,7 @@ static void drawPlane(int x, int y, float trackDeg, bool hasTrack, uint16_t col)
 
 void ScreenPlanes_Enter() {
   s_nextFetch = 0;
+  s_failCount = 0;   // start each visit to the screen with a clean error streak
 }
 
 bool ScreenPlanes_Tick() {
@@ -149,9 +161,30 @@ bool ScreenPlanes_Tick() {
 
   if (millis() >= s_nextFetch) {
     s_status = "Fetching...";
-    s_dataOk = ADSB_Fetch(Settings_Lat(), Settings_Lon(), currentRange());
-    s_status = s_dataOk ? "OK" : "Error";
-    s_nextFetch = millis() + (s_dataOk ? 5000 : 15000);
+    bool ok = ADSB_Fetch(Settings_Lat(), Settings_Lon(), currentRange());
+
+    if (ok) {
+      // Good fetch: clear the failure streak and poll again at the normal rate.
+      s_failCount = 0;
+      s_dataOk    = true;
+      s_status    = "OK";
+      s_nextFetch = millis() + FETCH_OK_MS;
+    } else {
+      // Missed fetch. ADSB_Fetch left the previous data intact, so keep showing
+      // it and retry quickly. Only after FETCH_FAIL_MAX misses in a row do we
+      // flip to the "Error" state and back off, so a single dropped request no
+      // longer blanks the radar.
+      s_failCount++;
+      if (s_failCount >= FETCH_FAIL_MAX) {
+        s_dataOk    = false;
+        s_status    = "Error";
+        s_nextFetch = millis() + FETCH_FAIL_MS;
+      } else {
+        // Still tolerating: leave s_dataOk as-is so the last "N aircraft"
+        // readout and the aircraft on the radar stay put during the retry.
+        s_nextFetch = millis() + FETCH_RETRY_MS;
+      }
+    }
     // Nothing to fix up here: the selection is an ICAO hex, not an index, so a
     // reordered list cannot move it onto a different aircraft. Whether the
     // selected aircraft is still present is resolved at draw time via
