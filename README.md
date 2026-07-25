@@ -226,6 +226,11 @@ This project did not appear out of thin air. It builds on two existing ones:
 
 ---
 
+## Version v0.3
+Ported the mid-screen flicker fix to EuropeanPlaneRadar (PSRAM Canvas16 with a single VSYNC-synced flush, num_fbs=1 + bounce buffers, 8 MHz pixel clock); raised the aircraft cap to 100, made the ADS-B poll interval range-based (5/10/15 s) while keeping the existing miss-tolerance, and swapped controls so swipe changes range and a long press toggles the screen.
+
+---
+
 ## Licence
 
 The code is under the **[MIT](LICENSE)** licence — you are free to use, modify.
