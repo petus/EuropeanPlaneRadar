@@ -125,9 +125,9 @@ Flash it
 
 | Gesture | Function |
 |---------|----------|
-| **Swipe** left/right | switch screen |
+| **Swipe** change range | switch screen |
 | **Short tap** on an aircraft | aircraft detail |
-| **Long press** | change range |
+| **Long press** | change screen |
 | **Hold BOOT** at startup (~3 s) | factory reset |
 
 ---
