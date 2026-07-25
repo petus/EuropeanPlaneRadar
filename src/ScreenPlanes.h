@@ -16,8 +16,12 @@ bool ScreenPlanes_Tick();                    // true = needs a redraw
 
 // Short tap - select an aircraft / close the detail panel.
 bool ScreenPlanes_HandleTap(int x, int y);
-// Long press - change the range.
-bool ScreenPlanes_HandleLongPress(int x, int y);
 
-// Is the aircraft detail open? (main then blocks swipe-to-switch)
+// Swipe - change the range (dir = +1 / -1).
+void ScreenPlanes_ChangeRange(int dir);
+
+// Close the aircraft detail panel (used by the long-press screen switch).
+void ScreenPlanes_CloseDetail();
+
+// Is the aircraft detail open? (main then blocks range change / screen switch)
 bool ScreenPlanes_DetailOpen();

@@ -11,7 +11,7 @@
 #include <Arduino.h>
 
 #define ADSB_API_BASE "https://opendata.adsb.fi/api/v3/lat/"
-#define ADSB_MAX 40           // cap on aircraft to draw
+#define ADSB_MAX 100          // cap on aircraft to draw (airborne only)
 
 struct Aircraft {
   float lat = 0;

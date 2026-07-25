@@ -12,9 +12,23 @@
 #include "driver/spi_master.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 
 esp_lcd_panel_handle_t panel_handle = NULL;
 static spi_device_handle_t s_spi = NULL;
+
+// VSYNC gate: given from the panel's VSYNC ISR, waited on by LCD_Flush so the
+// full-frame copy always starts at the top of a frame (see LCD_Flush).
+static SemaphoreHandle_t s_vsyncSem = NULL;
+
+static bool IRAM_ATTR lcd_on_vsync(esp_lcd_panel_handle_t panel,
+                                   const esp_lcd_rgb_panel_event_data_t* edata,
+                                   void* user_ctx) {
+  (void)panel; (void)edata; (void)user_ctx;
+  BaseType_t hp = pdFALSE;
+  if (s_vsyncSem) xSemaphoreGiveFromISR(s_vsyncSem, &hp);
+  return hp == pdTRUE;
+}
 
 // --- ST7701 command/data over SPI (command_bits=1, address_bits=8) ---
 static void ST7701_Cmd(uint8_t cmd) {
@@ -142,7 +156,13 @@ void ST7701_Init() {
 
   ST7701_SendInit();
 
-  // RGB panel (framebuffer in PSRAM, double buffered).
+  // RGB panel. Framebuffer in PSRAM, single FB + bounce buffers.
+  //
+  // CRITICAL anti-flicker combo: num_fbs=1 AND bounce buffers. num_fbs=2
+  // (double_fb) and bounce_buffer_size are MUTUALLY EXCLUSIVE driver modes;
+  // the original code enabled BOTH, which causes tearing / random-pixel
+  // flicker on this panel. Bounce buffers let the RGB DMA ride out short
+  // PSRAM-bus stalls caused by the canvas flush and network buffers.
   esp_lcd_rgb_panel_config_t rgb = {};
   rgb.clk_src = LCD_CLK_SRC_DEFAULT;
   rgb.timings.pclk_hz = RGB_FREQ_HZ;
@@ -157,8 +177,8 @@ void ST7701_Init() {
   rgb.timings.flags.pclk_active_neg = false;
   rgb.data_width = 16;
   rgb.bits_per_pixel = 16;
-  rgb.num_fbs = 2;
-  rgb.bounce_buffer_size_px = 10 * LCD_WIDTH;
+  rgb.num_fbs = 1;                               // single framebuffer...
+  rgb.bounce_buffer_size_px = 10 * LCD_WIDTH;    // ...paired with bounce buffers
   rgb.psram_trans_align = 64;
   rgb.hsync_gpio_num = RGB_HSYNC;
   rgb.vsync_gpio_num = RGB_VSYNC;
@@ -174,16 +194,42 @@ void ST7701_Init() {
   rgb.data_gpio_nums[12] = RGB_D12;  rgb.data_gpio_nums[13] = RGB_D13;
   rgb.data_gpio_nums[14] = RGB_D14;  rgb.data_gpio_nums[15] = RGB_D15;
   rgb.flags.fb_in_psram = true;
-  rgb.flags.double_fb = true;
+  // NOTE: double_fb intentionally NOT set (it forces num_fbs=2 and conflicts
+  // with the bounce buffers above - that combination was the flicker source).
 
   esp_lcd_new_rgb_panel(&rgb, &panel_handle);
   esp_lcd_panel_reset(panel_handle);
   esp_lcd_panel_init(panel_handle);
+
+  // Register a VSYNC callback so LCD_Flush can synchronise the frame copy to the
+  // start of a scan-out cycle (removes the mid-screen tearing band).
+  s_vsyncSem = xSemaphoreCreateBinary();
+  esp_lcd_rgb_panel_event_callbacks_t cbs = {};
+  cbs.on_vsync = lcd_on_vsync;
+  esp_lcd_rgb_panel_register_event_callbacks(panel_handle, &cbs, NULL);
 }
 
 void LCD_DrawBitmap(uint16_t x1, uint16_t y1, uint16_t x2, uint16_t y2, uint16_t* color) {
   // esp_lcd treats x_end/y_end as exclusive, hence the +1.
   esp_lcd_panel_draw_bitmap(panel_handle, x1, y1, x2 + 1, y2 + 1, color);
+}
+
+void LCD_Flush(const uint16_t* fb) {
+  // One big transfer: whole canvas -> panel framebuffer (single bulk read on the
+  // PSRAM bus instead of 230k tiny pixel writes).
+  //
+  // Wait for the next VSYNC first. With num_fbs=1 the copy writes into the very
+  // framebuffer the RGB DMA is scanning out. If the copy STARTS while the panel
+  // is already scanning the middle of the screen, the write pointer overtakes
+  // the read pointer around y=240 -> a flickering band there, most visible on
+  // high-contrast content (an aircraft or a rain cloud on the left/centre).
+  // Starting the copy right at VSYNC keeps the write ahead of the scan-out for
+  // the whole frame, so they never cross and the band disappears.
+  if (s_vsyncSem) {
+    xSemaphoreTake(s_vsyncSem, 0);                    // drop any stale event
+    xSemaphoreTake(s_vsyncSem, pdMS_TO_TICKS(100));   // block until the next VSYNC
+  }
+  esp_lcd_panel_draw_bitmap(panel_handle, 0, 0, LCD_WIDTH, LCD_HEIGHT, (void*)fb);
 }
 
 // --- Backlight ---

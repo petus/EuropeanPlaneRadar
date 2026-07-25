@@ -31,6 +31,15 @@ static int s_rangeIdx = 1;   // 25 km by default
 
 static float currentRange() { return RANGES_KM[s_rangeIdx]; }
 
+// Good-fetch poll interval by range. Larger areas return more data and are less
+// time-critical, so they are polled less often - lighter on the free adsb.fi API.
+static unsigned long basePeriodMs() {
+  float r = currentRange();
+  if (r <= 25.0f) return 5000;    // 10 / 25 km
+  if (r <= 50.0f) return 10000;   // 50 km
+  return 15000;                   // 100 km
+}
+
 static unsigned long s_nextFetch = 0;
 static bool  s_dataOk = false;
 static String s_status = "Starting...";
@@ -40,7 +49,7 @@ static String s_status = "Starting...";
 // TLS handshake failing under heap pressure). A single miss should not blank the
 // radar or flash "Error", so failures are tolerated: the last good data stays on
 // screen and "Error" is only shown after several misses in a row.
-#define FETCH_OK_MS     8000    // interval after a good fetch (was 5000)
+// Good-fetch interval is range-based now (see basePeriodMs()).
 #define FETCH_RETRY_MS  2000    // quick retry after a miss, before giving up
 #define FETCH_FAIL_MS  15000    // back-off once we are officially in error
 #define FETCH_FAIL_MAX     3    // consecutive misses before showing "Error"
@@ -168,7 +177,7 @@ bool ScreenPlanes_Tick() {
       s_failCount = 0;
       s_dataOk    = true;
       s_status    = "OK";
-      s_nextFetch = millis() + FETCH_OK_MS;
+      s_nextFetch = millis() + basePeriodMs();   // range-based cadence
     } else {
       // Missed fetch. ADSB_Fetch left the previous data intact, so keep showing
       // it and retry quickly. Only after FETCH_FAIL_MAX misses in a row do we
@@ -225,14 +234,17 @@ bool ScreenPlanes_HandleTap(int x, int y) {
   return false;
 }
 
-// Long press: change the range (anywhere on screen).
-bool ScreenPlanes_HandleLongPress(int x, int y) {
-  if (ScreenPlanes_DetailOpen()) { selectNone(); return true; }   // close the detail
-  s_rangeIdx = (s_rangeIdx + 1) % RANGE_COUNT;
+// Swipe: change the range (both directions). Re-fetch immediately at the new
+// radius. Ignored while the detail panel is open (close it first).
+void ScreenPlanes_ChangeRange(int dir) {
+  if (ScreenPlanes_DetailOpen()) return;
+  s_rangeIdx = (s_rangeIdx + dir + RANGE_COUNT) % RANGE_COUNT;
   Serial.printf("ADSB range: %.0f km\n", currentRange());
   s_nextFetch = 0;
-  return true;
 }
+
+// Close the detail panel (called on the long-press screen switch).
+void ScreenPlanes_CloseDetail() { selectNone(); }
 
 void ScreenPlanes_Draw() {
   gfx->fillScreen(C_BLACK);

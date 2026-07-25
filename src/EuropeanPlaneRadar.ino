@@ -16,9 +16,9 @@
 //    2) Settings       - brightness, WiFi, location
 //
 //  Controls:
-//    - swipe                       = switch screen
+//    - swipe left/right            = change the range
 //    - short tap on an aircraft    = aircraft detail
-//    - long press                  = change range
+//    - long press                  = switch screen (radar <-> settings)
 //    - hold BOOT at startup (~3 s) = factory reset
 //
 //  Libraries used (Arduino IDE, ESP32 core 3.x):
@@ -54,6 +54,7 @@
 
 #include "TCA9554.h"
 #include "Display_ST7701.h"
+#include "Canvas16.h"
 #include "Touch_CST820.h"
 #include "Settings.h"
 #include "UI.h"
@@ -69,51 +70,15 @@
 #define TZ_INFO "CET-1CEST,M3.5.0,M10.5.0/3"
 #define BOOT_PIN 0
 
-// --- Arduino_GFX layer on top of the esp_lcd panel ---
-class Arduino_ST7701_RGB : public Arduino_GFX {
- public:
-  Arduino_ST7701_RGB(int16_t w, int16_t h) : Arduino_GFX(w, h) {}
-  bool begin(int32_t speed = GFX_NOT_DEFINED) override { return true; }
-
-  void writePixelPreclipped(int16_t x, int16_t y, uint16_t color) override {
-    LCD_DrawBitmap(x, y, x, y, &color);
-  }
-  void writeFastVLine(int16_t x, int16_t y, int16_t h, uint16_t color) override {
-    if (h <= 0) return;
-    uint16_t* line = (uint16_t*)malloc(h * sizeof(uint16_t));
-    if (!line) return;
-    for (int16_t i = 0; i < h; i++) line[i] = color;
-    LCD_DrawBitmap(x, y, x, y + h - 1, line);
-    free(line);
-  }
-  void writeFastHLine(int16_t x, int16_t y, int16_t w, uint16_t color) override {
-    if (w <= 0) return;
-    uint16_t* line = (uint16_t*)malloc(w * sizeof(uint16_t));
-    if (!line) return;
-    for (int16_t i = 0; i < w; i++) line[i] = color;
-    LCD_DrawBitmap(x, y, x + w - 1, y, line);
-    free(line);
-  }
-  void writeFillRectPreclipped(int16_t x, int16_t y, int16_t w, int16_t h,
-                               uint16_t color) override {
-    if (w <= 0 || h <= 0) return;
-    uint32_t n = (uint32_t)w * h;
-    uint16_t* buf = (uint16_t*)heap_caps_malloc(n * sizeof(uint16_t), MALLOC_CAP_DEFAULT);
-    if (!buf) return;
-    for (uint32_t i = 0; i < n; i++) buf[i] = color;
-    LCD_DrawBitmap(x, y, x + w - 1, y + h - 1, buf);
-    free(buf);
-  }
-};
-
-// Output layer - writes straight into the RGB panel (used by the canvas on flush).
-Arduino_ST7701_RGB* outputPanel = nullptr;
-
-// gfx = off-screen canvas in PSRAM. All drawing goes here, then flush() pushes
-// the whole frame to the panel in one go -> no flicker.
+// gfx = single off-screen canvas in PSRAM (Canvas16). All drawing goes here;
+// flush() pushes the whole frame to the panel in one draw_bitmap -> no flicker.
+// (Typed as Arduino_GFX* so the shared UI code needs no changes; the object is a
+//  Canvas16, whose virtual flush()/writers do the PSRAM-safe, VSYNC-synced work.)
 Arduino_GFX* gfx = nullptr;
 
-static void netPoll() { yield(); }
+// yield() during long network transfers, and feed the watchdog so the ADS-B
+// fetch (buffered read + one retry) can never block long enough to trip it.
+static void netPoll() { yield(); Watchdog_Feed(); }
 
 static void checkBootReset() {
   pinMode(BOOT_PIN, INPUT_PULLUP);
@@ -190,14 +155,12 @@ static bool activeTap(int x, int y) {
   }
   return false;
 }
-static bool activeLongPress(int x, int y) {
-  switch (s_screen) {
-    case 0: return ScreenPlanes_HandleLongPress(x, y);
-    case 1: return false;   // settings does not need a long press
-  }
-  return false;
+// Swipe -> range on the radar screen (settings has no range).
+static void activeChangeRange(int dir) {
+  if (s_screen == 0) ScreenPlanes_ChangeRange(dir);
 }
-// Is a modal window (the detail panel) open on the active screen? If so, block swiping.
+// Is a modal window (the detail panel) open on the active screen? If so, a
+// swipe/long-press is captured to close it instead of acting.
 static bool activeModalOpen() {
   return (s_screen == 0) && ScreenPlanes_DetailOpen();
 }
@@ -220,12 +183,15 @@ void setup() {
   Set_Backlight(Settings_Backlight());
   ST7701_Init();
 
-  // Output panel + a canvas in PSRAM on top of it (to avoid flicker).
-  outputPanel = new Arduino_ST7701_RGB(LCD_WIDTH, LCD_HEIGHT);
-  outputPanel->begin();
-  Arduino_Canvas* canvas = new Arduino_Canvas(LCD_WIDTH, LCD_HEIGHT, outputPanel);
-  canvas->begin();
+  // Single PSRAM canvas (anti-flicker). All drawing goes here; flush() pushes
+  // the whole frame to the panel in one draw_bitmap.
+  Canvas16* canvas = new Canvas16(LCD_WIDTH, LCD_HEIGHT);
+  if (!canvas->begin()) {
+    Serial.println("FATAL: canvas alloc failed (check OPI PSRAM)");
+    while (true) delay(1000);
+  }
   gfx = canvas;
+  gfx->setTextWrap(false);
   gfx->fillScreen(C_BLACK);
   gfx->flush();
 
@@ -252,7 +218,7 @@ void setup() {
 }
 
 void loop() {
-  // --- Touch: swipe (switch screen) vs tap (range) ---
+  // --- Touch: swipe (range) vs short tap (detail) vs long press (switch screen) ---
   static bool touching = false;
   static int  startX = 0, startY = 0;
   static int  lastX = 0, lastY = 0;
@@ -274,12 +240,19 @@ void loop() {
     unsigned long dur = millis() - startMs;
     bool smallMove = (abs(dx) < 60 && abs(dy) < 60);
 
-    if (!activeModalOpen() && abs(dx) >= 70 && abs(dy) <= 90 && dur <= 700) {
-      switchScreen(dx < 0 ? +1 : -1);            // horizontal swipe (not while a detail is open)
+    if (abs(dx) >= 70 && abs(dy) <= 90 && dur <= 700) {
+      // Horizontal swipe -> change range. With a detail open, a swipe just
+      // closes it (so you cannot re-scale behind the panel).
+      if (activeModalOpen()) { ScreenPlanes_CloseDetail(); drawActive(); }
+      else                   { activeChangeRange(dx < 0 ? +1 : -1); drawActive(); }
     } else if (smallMove && dur >= 500) {
-      if (activeLongPress(lastX, lastY)) drawActive();   // long press -> range
+      // Long press -> switch screen (only two screens, so just toggle). Closes
+      // an open detail first.
+      if (activeModalOpen()) { ScreenPlanes_CloseDetail(); drawActive(); }
+      else                     switchScreen(+1);
     } else if (smallMove && dur < 500) {
-      if (activeTap(lastX, lastY)) drawActive();         // short tap -> detail/selection
+      // Short tap -> aircraft detail / selection.
+      if (activeTap(lastX, lastY)) drawActive();
     }
   }
 
