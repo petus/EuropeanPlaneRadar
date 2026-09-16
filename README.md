@@ -1,5 +1,7 @@
 # European Plane Radar
 
+## **Project was moved to https://github.com/petus/MeteoPlaneRadar. This repo will not be updated anymore.**
+
 **Live aircraft radar on a round touchscreen.**
 
 Air traffic from adsb.fi on a single device. Tap an aircraft to see what it is, how high it is and where it is heading. Everything runs on one board — no soldering, no wiring.
@@ -257,6 +259,8 @@ If you build something interesting on top of this, I would love to hear about it
 > personal use. For a commercial product, arrange appropriate access to the data.
 
 ---
+
+## **Project was moved to https://github.com/petus/MeteoPlaneRadar. This repo will not be updated anymore.**
 
 <div align="center">
 
